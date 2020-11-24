@@ -43,8 +43,8 @@ def get_arguments(argv):
                         help="min coref chain len (default 9)")
     parser.add_argument("--instance_min", default=20, type=int,
                         help="minimum number of instances (default 20)")
-    parser.add_argument("--instance_max", default=700, type=int,
-                        help="maximum number of instances (default 350)")
+    parser.add_argument("--instance_max", default=600, type=int,
+                        help="maximum number of instances (default 600)")
     parser.add_argument('--is_cased', action='store_true', default=False,
                         help='BERT is case sensitive')
     parser.add_argument('--save_ng_pkl', action='store_true', default=False,
@@ -69,6 +69,13 @@ def write_instance(
     edge_norms = np.array(rgcn_inputs['edge_norms'])
     ng_edges = np.vstack((edge_src, edge_types, edge_dest, edge_norms))
     fw_h5.create_dataset('graph_{}/ng_edges'.format(cur_gid), data=ng_edges)
+
+    if 'node_types' in rgcn_inputs:
+        node_ids = np.array([node_id for node_id in range(rgcn_inputs['num_nodes'])])
+        node_types = np.array(rgcn_inputs['node_types'])
+        ng_nodes = np.vstack((node_ids, node_types))
+        fw_h5.create_dataset('graph_{}/ng_nodes'.format(cur_gid), data=ng_nodes)
+
 
     # bert_inputs
     binput = torch.stack((bert_inputs['input_ids'], bert_inputs['input_masks'], bert_inputs['token_type_ids']), dim=0)
@@ -117,9 +124,9 @@ def chain2numpy(chains):
     return arr
 
 
-def worker(args, pidx, g_graph_counts, g_rel_counts,
+def worker(args, pidx, g_graph_counts, g_rel_counts, g_ntype_counts,
            src_fpath, target_dir, prefix,
-           rtype2idx, dmarkers, no_entity):
+           rtype2idx, ntype2idx, dmarkers, no_entity, use_pos_tags):
     logger = utils.get_root_logger(args, log_fname='{}.log'.format(prefix))
 
     dest_fpath = os.path.join(target_dir, '{}.h5'.format(prefix)).replace('\\', '/')
@@ -152,8 +159,8 @@ def worker(args, pidx, g_graph_counts, g_rel_counts,
 
             # filter by #nodes
             ng, coref_chains = create_narrative_graph(
-                doc, rtypes=rtype2idx, dmarkers=dmarkers, no_entity=no_entity,
-                min_coref_chain_len=args.min_coref_chain_len
+                doc, rtypes=rtype2idx, ntypes=ntype2idx, dmarkers=dmarkers, no_entity=no_entity,
+                min_coref_chain_len=args.min_coref_chain_len, use_pos_tags=use_pos_tags
             )
 
             g_node_counts.append(len(ng.nodes))
@@ -189,6 +196,12 @@ def worker(args, pidx, g_graph_counts, g_rel_counts,
             estats = ng.get_edge_stats()
             for rtype, c in estats.items():
                 g_rel_counts[rtype2idx[rtype]] += c
+
+            if use_pos_tags:
+                nstats = ng.get_node_stats()
+                for ntype, c in nstats.items():
+                    g_ntype_counts[ntype2idx[ntype]] += c
+
             count_valid += 1
 
     fw_h5.close()
@@ -217,6 +230,7 @@ def main(args):
     config = json.load(open(args.config_file))
     assert config["config_target"] == "narrative_graph"
     rtype2idx = config['rtype2idx']
+    ntype2idx = config['ntype2idx']
     if args.no_discourse:
         dmarkers = None
     else:
@@ -244,12 +258,22 @@ def main(args):
     g_graph_counts = multiprocessing.Array('i', len(fs))
 
     all_g_rel_counts = []
+    all_g_ntype_counts = []
     ps = []
     for pidx, src_fpath in enumerate(fs):
         g_rel_counts = multiprocessing.Array('i', len(rtype2idx))
         for i in range(len(rtype2idx)):
             g_rel_counts[i] = 0
         all_g_rel_counts.append(g_rel_counts)
+
+        if config['use_pos_tags']:
+            g_ntype_counts = multiprocessing.Array('i', len(ntype2idx))
+            for i in range(len(ntype2idx)):
+                g_ntype_counts[i] = 0
+            all_g_ntype_counts.append(g_ntype_counts)
+        else:
+            g_ntype_counts = None
+
 
         src_fpath = src_fpath.replace('\\', '/')
         sp = src_fpath.split('/')
@@ -275,11 +299,15 @@ def main(args):
                                           pidx,
                                           g_graph_counts,
                                           g_rel_counts,
+                                          g_ntype_counts,
                                           src_fpath, target_dir,
                                           prefix,
                                           rtype2idx,
+                                          ntype2idx,
                                           dmarkers,
-                                          config['no_entity'])
+                                          config['no_entity'],
+                                          config['use_pos_tags']
+                                          )
                                     )
         p.start()
         ps.append(p)
@@ -304,6 +332,17 @@ def main(args):
             text = '{}: {} rels'.format(rtype, all_rel_counts[idx])
             print(text)
             fw.write(text + '\n')
+
+        if config['use_pos_tags']:
+            all_ntype_counts = [0] * len(ntype2idx)
+            for ncounts in all_g_ntype_counts:
+                for i in range(len(ntype2idx)):
+                    all_ntype_counts[i] += ncounts[i]
+
+            for ntype, idx in ntype2idx.items():
+                text = '{}: {} ntypes'.format(ntype, all_ntype_counts[idx])
+                print(text)
+                fw.write(text + '\n')                
 
 
 if __name__ == "__main__":

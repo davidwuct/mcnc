@@ -13,11 +13,6 @@ from transformers import get_linear_schedule_with_warmup
 logger = logging.getLogger(__name__)
 
 
-def verify_dir(dir):
-    if not os.path.exists(dir):
-        os.makedirs(dir)
-
-
 def load_lined_json(fpath, key):
     js = {}
     with open(fpath, 'r') as fr:

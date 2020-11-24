@@ -359,7 +359,7 @@ def _update_norms(edges, n_nodes):
     g = dgl.graph((edges[0].long(), edges[2].long()), num_nodes=n_nodes)
     for i in range(edges.shape[1]) :
         nid2 = int(edges[2][i])
-        edges[3][i] = 1.0 / g.in_degrees([nid2])[0]
+        edges[3][i] = 1.0 / g.in_degrees(nid2)[0]
     return edges
 
 
